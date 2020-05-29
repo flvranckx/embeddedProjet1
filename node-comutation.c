@@ -1,41 +1,6 @@
-/*
- * Copyright (c) 2006, Swedish Institute of Computer Science.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- * 3. Neither the name of the Institute nor the names of its contributors
- *    may be used to endorse or promote products derived from this software
- *    without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE INSTITUTE AND CONTRIBUTORS ``AS IS'' AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE INSTITUTE OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- * SUCH DAMAGE.
- *
- * This file is part of the Contiki operating system.
- *
- */
 
-/**
- * \file
- *         A very simple Contiki application showing how Contiki programs look
- * \author
- *         Adam Dunkels <adam@sics.se>
- */
+// this file is for a computation node, it should work very similar to a regular node. 
+
 #define REAL double
 #include "contiki.h"
 #include "random.h"
@@ -51,17 +16,17 @@
 #include <math.h>       
 
 
-unsigned int myhop=2000;
-unsigned int nextHop0; 
+unsigned int myhop=2000; // what distance am I from the root ? if 2000, the tree is not builded yet 
+unsigned int nextHop0; // legacy code, before I found the linkaddr_t data type. I used two unsigned int to store an address.
 unsigned int nextHop1; 
 unsigned int reset_hopLimit;
 unsigned long ledTimer;
 bool ledOn = false;
 
-unsigned int node_metered=0;
-unsigned long lastAck;
+unsigned int node_metered=0; // the amount of node from which the data will be computed localy and not sended to the root. max 5 
+unsigned long lastAck; // last ack received from the root. Will send keep-alive periodically
 static struct etimer et;
-bool registered =false;
+bool registered =false; // am I in the tree ? 
 struct broadcastMessage{
   bool treebuilder; 
   bool reset; 
@@ -72,8 +37,7 @@ struct unicastMessage{
   linkaddr_t from_addr;
   bool data;
   bool reg;
-  int temperature;
-  int instruction; 
+  int temperature; 
 };
 struct rootingTable{
   struct rootingTable * next;
@@ -96,12 +60,12 @@ PROCESS(computation_node, "comutation node ");
 AUTOSTART_PROCESSES(&computation_node);
 static struct broadcast_conn broadcast;
 static struct unicast_conn uc;
-bool isMetered(linkaddr_t *a);
+bool isMetered(linkaddr_t *a); // check if a specific address is computed from this computation node. 
 
 
 
 
-static REAL sqr(REAL x) {
+static REAL sqr(REAL x) { // for the regression. 
     return x*x;
 }
 
@@ -111,16 +75,16 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
   struct broadcastMessage * b = packetbuf_dataptr();
   printf("broadcast message received from %d.%d: '%d'\n",
          from->u8[0], from->u8[1], b->hop);
-  if(b->reset){
-    if(myhop != 2000){// not yet reseted
+  if(b->reset){ // crital call for a recomputation of the tree
+    if(myhop != 2000){
       myhop = 2000;
       resetNetwork();
 
     }
   }
-  else if(b->hop < myhop){
+  else if(b->hop < myhop){ // if this one is closer than the closest I already had. 
     myhop = b->hop;
-    nextHop0 = from->u8[0];
+    nextHop0 = from->u8[0]; // set next hop in the tree
     nextHop1 = from->u8[1];
     b->hop++;
     packetbuf_copyfrom(b, sizeof(struct broadcastMessage));
@@ -132,11 +96,11 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 static void
 recv_uc(struct unicast_conn *c, const linkaddr_t *from)
 {
-  struct unicastMessage * u = packetbuf_dataptr();
+  struct unicastMessage * u = packetbuf_dataptr(); 
   printf("node received a message from %d via %d for %d with data %d\n", u->from_addr.u8[0], from->u8[0], u->dest_addr.u8[0], u->temperature);
   
   struct rootingTable * current= myRootingTable;
-  while(current!=NULL){
+  while(current!=NULL){ // handle timeout for disconnection. we expect all the direct child node to send data once per minute. 
     if(current->addr.u8[0] == from->u8[0] && current->addr.u8[1] == from->u8[1]){
       current->lastCom = clock_seconds();
       
@@ -144,7 +108,7 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
     current=current->next;
   }
 
-  if(u->reg){
+  if(u->reg){ // registration of child node
     
     printf("received reg message from %d.%d\n", from->u8[0],from->u8[1]);
   
@@ -152,19 +116,18 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
 
   }
   if(linkaddr_cmp(&linkaddr_node_addr, &(u->dest_addr))){
-    if(u->temperature==-1){
+    if(u->temperature==-1){ // special instruction to indicate that a node needs to open the valve. 
       ledOn=true;
       leds_on(LEDS_ALL);
       ledTimer = clock_seconds()+10;
     }
-    else
-      printf("ack received\n");
+    
     lastAck = clock_seconds();
     return; 
   }
   
-  if(linkaddr_cmp(&nullAddr, &(u->dest_addr))){
-    if(!isMetered(from)){
+  if(linkaddr_cmp(&nullAddr, &(u->dest_addr))){ // null address are for the root of the tree. Can be intercepted by this node as a computation node
+    if(!isMetered(from)){ // if we reached the maximum sensor for this calculation, transfer it
       printf("transfer message\n");
       linkaddr_t addr;
       packetbuf_copyfrom(u, sizeof(struct unicastMessage));
@@ -191,28 +154,28 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
       {
         current=current->next;
       }
-      if(current==NULL){
-        printf("ROOTING TABLE ERROR, head:%d, trying to compare %d and %d\n", myRootingTable->addr.u8[0], u2.dest_addr.u8[0], current->addr.u8[0]);
+      if(current==NULL){//Rooting table error, recomputation of the network is needed
+        
         resetNetwork();
       }
       else{
-        printf("ack send to %d\n", current->addr.u8[0]);
-        unicast_send(&uc, &(current->nextHop));
+      
+        unicast_send(&uc, &(current->nextHop)); // send ack 
         
       }
-      struct data * new = malloc(sizeof(struct data));
+      struct data * new = malloc(sizeof(struct data)); // store data
       new->value=u->temperature;
       new->next=current->head;
       current->head = new;
       current->dataCount++;
-    printf("data collected %d for %d\n", current->dataCount, current->addr.u8[0]);
-    if(current->dataCount == 10 ){
+    
+    if(current->dataCount == 10 ){ // if we have enough data
       
       double y[10];
       double x[10];
       int i = 1;
-      while(i<11){
-        y[i]=current->head->value;
+      while(i<11){ // would not compile with a for loop, I did not look any further into it. I didn't have time to waste on this
+        y[i]=current->head->value; 
         x[i]=i;
         struct data *t = current->head;
         current->head = current->head->next;
@@ -222,24 +185,24 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
       current->dataCount=0;
       double a;
       double b;
-      linreg(10,x,y,&a,&b,NULL);
+      linreg(10,x,y,&a,&b,NULL); // do the computation
       if(a>0.0){
-        printf("node should open its valve\n");
+
         struct unicastMessage u3;
         u3.data = true; 
         u3.reg = false;
-        u3.temperature = -1;
+        u3.temperature = -1; // special code, it means "open the valve"
         u3.from_addr = linkaddr_node_addr;
         u3.dest_addr = current->addr;
         
         packetbuf_copyfrom(&u3, sizeof(struct unicastMessage));
-        unicast_send(&uc, &(current->nextHop));
+        unicast_send(&uc, &(current->nextHop)); // send to the node from who we processed the data
       }
 
     }
   }
 
-  else{
+  else{ // if the message is not for this node, transfer to the next hop 
     struct rootingTable * current = myRootingTable;
     while(current!=NULL){
       if(linkaddr_cmp(&(current->addr), &(u->dest_addr))){
@@ -260,7 +223,7 @@ void freeData(struct rootingTable * metered){
     d = temp;
   }
 }
-bool isMetered(linkaddr_t *a){
+bool isMetered(linkaddr_t *a){ // is that a node we make the calculation for ? 
   struct rootingTable * current = myRootingTable;
   while(current != NULL){
     if(linkaddr_cmp(&(current->addr),a)){
@@ -273,13 +236,12 @@ static void
 sent_uc(struct unicast_conn *c, int status, int num_tx)
 {
   const linkaddr_t *dest = packetbuf_addr(PACKETBUF_ADDR_RECEIVER);
-  if(linkaddr_cmp(dest, &linkaddr_null)) {
+  if(linkaddr_cmp(dest, &linkaddr_null)) { // legacy debug, I don't dare to delete
     return;
   }
-  printf("unicast message sent to %d.%d: status %d num_tx %d\n",
-    dest->u8[0], dest->u8[1], status, num_tx);
+
 }
-void addToRootingTable(linkaddr_t addr, linkaddr_t nexthop){
+void addToRootingTable(linkaddr_t addr, linkaddr_t nexthop){ // registration of a child node. 
   struct rootingTable * r= (struct rootingTable*)  malloc(sizeof(struct rootingTable));
   r->addr = addr;
   r->nextHop = nexthop;
@@ -321,13 +283,13 @@ void myExitHandler(){
   unicast_close(&uc);
   broadcast_close(&broadcast);
 }
-void resetNetwork(){
+void resetNetwork(){ // trigger this function to start the recomputation of the network. 
   struct broadcastMessage b;
   b.reset = true;
   b.hop = 0;
   packetbuf_copyfrom(&b, sizeof(struct broadcastMessage));
   broadcast_send(&broadcast);
-  printf("RESET ENGAGE\n");
+
   freeRoutingTable();
   myRootingTable=NULL;
   registered=false;
@@ -350,18 +312,18 @@ PROCESS_THREAD(computation_node, ev, data)
   unicast_open(&uc, 146, &unicast_callbacks);
   while(1) {
     struct rootingTable * current = myRootingTable;
-    if( clock_seconds() -  lastAck >60L){
-      resetNetwork();
+    if( clock_seconds() -  lastAck >60L){ //timeout from root
+      resetNetwork(); // trigger recomputation
       continue;
     }
-    if(ledOn && ledTimer < clock_seconds()){
+    if(ledOn && ledTimer < clock_seconds()){ // close valve, it has been open for 10 sec 
       ledOn = false;
       leds_off(LEDS_ALL);
-      printf("closing valve\n");
+     
     }
     while(current !=NULL){
-      if( linkaddr_cmp(&(current->nextHop), &(current->addr)) &&  clock_seconds() - current->lastCom > 60L ){
-        resetNetwork();
+      if( linkaddr_cmp(&(current->nextHop), &(current->addr)) &&  clock_seconds() - current->lastCom > 60L ){ //check for timeout of child
+        resetNetwork(); // trigger recomputation
         current =NULL;
         continue;
       }
@@ -370,16 +332,16 @@ PROCESS_THREAD(computation_node, ev, data)
   
     //printf("timer %d\n", myhop );
     // Delay 8-16 seconds 
-    etimer_set(&et, CLOCK_SECOND * 10 + random_rand() % (CLOCK_SECOND * 2));
+    etimer_set(&et, CLOCK_SECOND * 10 + random_rand() % (CLOCK_SECOND * 2)); // should act every 10 sec plus a bit of randomness for collision avoidence. 
 
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
     
-    if(myhop==2000){
-      resetNetwork();
+    if(myhop==2000){ // if not in a tree, trigger the recomputation
+      resetNetwork(); 
       etimer_set(&et, CLOCK_SECOND * 30);
       PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
     }
-    else if(!registered){
+    else if(!registered){ // if in a tree but not registered to parent node
      
       registered = true;
       struct unicastMessage u;
@@ -396,7 +358,7 @@ PROCESS_THREAD(computation_node, ev, data)
       }
     }
     
-    else{
+    else{ // if every normal, send keep-alive to root. 
       struct unicastMessage u;
       u.data = true; 
       u.reg = false;
@@ -416,7 +378,7 @@ PROCESS_THREAD(computation_node, ev, data)
   
   PROCESS_END();
 }
-int linreg(int n, const REAL x[], const REAL y[], REAL* m, REAL* b, REAL* r){
+int linreg(int n, const REAL x[], const REAL y[], REAL* m, REAL* b, REAL* r){ // least square fit
     REAL   sumx = 0.0;                      /* sum of x     */
     REAL   sumx2 = 0.0;                     /* sum of x**2  */
     REAL   sumxy = 0.0;                     /* sum of x * y */
