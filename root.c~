@@ -43,7 +43,7 @@ struct rootingTable{
   struct data *head;
   int dataCount;
 };
-struct rootingTable* lastest;
+struct * rootingTable lastest;
 struct data{
   int value;
   struct data * next;
