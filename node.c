@@ -52,7 +52,8 @@ unsigned int myhop=2000;
 unsigned int nextHop0; 
 unsigned int nextHop1; 
 unsigned int reset_hopLimit;
-
+unsigned int ledTimer;
+bool ledOn=false;
 
 unsigned long lastAck;
 static struct etimer et;
@@ -116,7 +117,7 @@ static void
 recv_uc(struct unicast_conn *c, const linkaddr_t *from)
 {
   struct unicastMessage * u = packetbuf_dataptr();
-  printf("node received a message from %d via %d for %d \n", u->from_addr.u8[0], from->u8[0], u->dest_addr.u8[0]);
+  printf("node received a message from %d via %d for %d with data %d\n", u->from_addr.u8[0], from->u8[0], u->dest_addr.u8[0], u->temperature);
   
   struct rootingTable * current= myRootingTable;
   while(current!=NULL){
@@ -132,10 +133,16 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
     printf("received reg message from %d.%d\n", from->u8[0],from->u8[1]);
   
     addToRootingTable(u->from_addr, *from);
-    leds_off(LEDS_ALL);
+
   }
   if(linkaddr_cmp(&linkaddr_node_addr, &(u->dest_addr))){
-    printf("ack received\n");
+    if(u->temperature==-1){
+      ledOn = true;
+      leds_on(LEDS_ALL);
+      ledTimer=clock_seconds;
+    }
+    else
+      printf("ack received\n");
     lastAck = clock_seconds();
     return; 
   }
@@ -231,7 +238,7 @@ PROCESS_THREAD(regular_node, ev, data)
   PROCESS_BEGIN();
   nullAddr.u8[0] = 0;
   nullAddr.u8[1] = 0;
-  leds_on(LEDS_ALL);
+
   broadcast_open(&broadcast, 129, &broadcast_call);
   unicast_open(&uc, 146, &unicast_callbacks);
   while(1) {
@@ -239,6 +246,10 @@ PROCESS_THREAD(regular_node, ev, data)
     if( clock_seconds() -  lastAck >60L){
       resetNetwork();
       continue;
+    }
+    if(ledOn && (clock_seconds() -ledTimer > 10L )){
+      ledOn=false;
+      leds_off(LEDS_ALL);
     }
     while(current !=NULL){
       if( linkaddr_cmp(&(current->nextHop), &(current->addr)) &&  clock_seconds() - current->lastCom > 60L ){
@@ -248,7 +259,7 @@ PROCESS_THREAD(regular_node, ev, data)
       }
       current=current->next;
     }
-    leds_on(LEDS_ALL);
+
     //printf("timer %d\n", myhop );
     // Delay 8-16 seconds 
     etimer_set(&et, CLOCK_SECOND * 10 + random_rand() % (CLOCK_SECOND * 2));

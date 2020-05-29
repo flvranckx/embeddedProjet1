@@ -55,6 +55,8 @@ unsigned int myhop=2000;
 unsigned int nextHop0; 
 unsigned int nextHop1; 
 unsigned int reset_hopLimit;
+unsigned long ledTimer;
+bool ledOn = false;
 
 unsigned int node_metered=0;
 unsigned long lastAck;
@@ -131,7 +133,7 @@ static void
 recv_uc(struct unicast_conn *c, const linkaddr_t *from)
 {
   struct unicastMessage * u = packetbuf_dataptr();
-  printf("node received a message from %d via %d for %d \n", u->from_addr.u8[0], from->u8[0], u->dest_addr.u8[0]);
+  printf("node received a message from %d via %d for %d with data %d\n", u->from_addr.u8[0], from->u8[0], u->dest_addr.u8[0], u->temperature);
   
   struct rootingTable * current= myRootingTable;
   while(current!=NULL){
@@ -147,10 +149,16 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
     printf("received reg message from %d.%d\n", from->u8[0],from->u8[1]);
   
     addToRootingTable(u->from_addr, *from);
-    leds_off(LEDS_ALL);
+
   }
   if(linkaddr_cmp(&linkaddr_node_addr, &(u->dest_addr))){
-    printf("ack received\n");
+    if(u->temperature==-1){
+      ledOn=true;
+      leds_on(LEDS_ALL);
+      ledTimer = clock_seconds()+10;
+    }
+    else
+      printf("ack received\n");
     lastAck = clock_seconds();
     return; 
   }
@@ -197,7 +205,7 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
       new->next=current->head;
       current->head = new;
       current->dataCount++;
-    printf("data collected %d\n", current->dataCount);
+    printf("data collected %d for %d\n", current->dataCount, current->addr.u8[0]);
     if(current->dataCount == 10 ){
       
       double y[10];
@@ -209,20 +217,22 @@ recv_uc(struct unicast_conn *c, const linkaddr_t *from)
         struct data *t = current->head;
         current->head = current->head->next;
         free(t);
+        i++;
       }
       current->dataCount=0;
       double a;
       double b;
       linreg(10,x,y,&a,&b,NULL);
-      if(a>1.0){
+      if(a>0.0){
+        printf("node should open its valve\n");
         struct unicastMessage u3;
         u3.data = true; 
         u3.reg = false;
         u3.temperature = -1;
         u3.from_addr = linkaddr_node_addr;
-        u3.dest_addr.u8[0] = u->from_addr.u8[0];
-        u3.dest_addr.u8[1] = u->from_addr.u8[1]; 
-        packetbuf_copyfrom(&u2, sizeof(struct unicastMessage));
+        u3.dest_addr = current->addr;
+        
+        packetbuf_copyfrom(&u3, sizeof(struct unicastMessage));
         unicast_send(&uc, &(current->nextHop));
       }
 
@@ -335,7 +345,7 @@ PROCESS_THREAD(computation_node, ev, data)
   PROCESS_BEGIN();
   nullAddr.u8[0] = 0;
   nullAddr.u8[1] = 0;
-  leds_on(LEDS_ALL);
+
   broadcast_open(&broadcast, 129, &broadcast_call);
   unicast_open(&uc, 146, &unicast_callbacks);
   while(1) {
@@ -343,6 +353,11 @@ PROCESS_THREAD(computation_node, ev, data)
     if( clock_seconds() -  lastAck >60L){
       resetNetwork();
       continue;
+    }
+    if(ledOn && ledTimer < clock_seconds()){
+      ledOn = false;
+      leds_off(LEDS_ALL);
+      printf("closing valve\n");
     }
     while(current !=NULL){
       if( linkaddr_cmp(&(current->nextHop), &(current->addr)) &&  clock_seconds() - current->lastCom > 60L ){
@@ -352,7 +367,7 @@ PROCESS_THREAD(computation_node, ev, data)
       }
       current=current->next;
     }
-    leds_on(LEDS_ALL);
+  
     //printf("timer %d\n", myhop );
     // Delay 8-16 seconds 
     etimer_set(&et, CLOCK_SECOND * 10 + random_rand() % (CLOCK_SECOND * 2));
